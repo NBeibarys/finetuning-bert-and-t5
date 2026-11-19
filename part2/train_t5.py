@@ -138,16 +138,102 @@ def eval_epoch(args, model, dev_loader, gt_sql_pth, model_sql_path, gt_record_pa
     should both provide good results. If you find that this component of evaluation takes too long with your compute,
     we found the cross-entropy loss (in the evaluation set) to be well (albeit imperfectly) correlated with F1 performance.
     '''
-    # TODO
+    # we need the tokenizer to decode the generated token ids back to sql text
+    from load_data import tokenizer
+
     model.eval()
-    return 0, 0, 0, 0, 0
+    criterion = nn.CrossEntropyLoss()
+
+    generated_queries = []
+    total_loss = 0
+    total_tokens = 0
+
+    for encoder_input, encoder_mask, decoder_input, decoder_targets, initial_decoder_inputs in tqdm(dev_loader):
+        encoder_input = encoder_input.to(DEVICE)
+        encoder_mask = encoder_mask.to(DEVICE)
+        decoder_input = decoder_input.to(DEVICE)
+        decoder_targets = decoder_targets.to(DEVICE)
+        initial_decoder_inputs = initial_decoder_inputs.to(DEVICE)
+
+        with torch.no_grad():
+            # first the loss on the dev set, computed the same way as in the training loop
+            logits = model(
+                input_ids=encoder_input,
+                attention_mask=encoder_mask,
+                decoder_input_ids=decoder_input,
+            )['logits']
+
+            non_pad = decoder_targets != PAD_IDX
+            loss = criterion(logits[non_pad], decoder_targets[non_pad])
+
+            num_tokens = torch.sum(non_pad).item()
+            total_loss += loss.item() * num_tokens
+            total_tokens += num_tokens
+
+            # then generation. beam search, starting from our bos token
+            # so generation matches training, and max 512 new tokens which
+            # covers the longest sql in the data (511 in training)
+            outputs = model.generate(
+                input_ids=encoder_input,
+                attention_mask=encoder_mask,
+                decoder_input_ids=initial_decoder_inputs,
+                max_new_tokens=512,
+                num_beams=4,
+                do_sample=False,
+            )
+
+        # decode the generated ids back to sql, skip special tokens removes
+        # our bos, the stop token and the pads
+        for ids in outputs:
+            generated_queries.append(tokenizer.decode(ids, skip_special_tokens=True))
+
+    # save our queries and their records. save_queries_and_records also
+    # executes every query on the flight database for us
+    save_queries_and_records(generated_queries, model_sql_path, model_record_path)
+
+    # compute the metrics against the ground truth dev queries and records
+    # the parameter is called gt_sql_pth in the provided function header, so we use that name
+    sql_em, record_em, record_f1, error_msgs = compute_metrics(gt_sql_pth, model_sql_path, gt_record_path, model_record_path)
+
+    # error rate is the fraction of queries that failed on the database,
+    # error_msgs has an empty string for queries that executed fine
+    error_rate = sum(1 for e in error_msgs if e) / len(error_msgs)
+
+    return total_loss / total_tokens, record_f1, record_em, sql_em, error_rate
         
 def test_inference(args, model, test_loader, model_sql_path, model_record_path):
     '''
-    You must implement inference to compute your model's generated SQL queries and its associated 
+    You must implement inference to compute your model's generated SQL queries and its associated
     database records. Implementation should be very similar to eval_epoch.
     '''
-    pass
+    # we need the tokenizer to decode the generated token ids back to sql text
+    from load_data import tokenizer
+
+    model.eval()
+    generated_queries = []
+
+    for encoder_input, encoder_mask, initial_decoder_inputs in tqdm(test_loader):
+        encoder_input = encoder_input.to(DEVICE)
+        encoder_mask = encoder_mask.to(DEVICE)
+        initial_decoder_inputs = initial_decoder_inputs.to(DEVICE)
+
+        with torch.no_grad():
+            # same generation as in eval_epoch, beam search from our bos
+            outputs = model.generate(
+                input_ids=encoder_input,
+                attention_mask=encoder_mask,
+                decoder_input_ids=initial_decoder_inputs,
+                max_new_tokens=512,
+                num_beams=4,
+                do_sample=False,
+            )
+
+        for ids in outputs:
+            generated_queries.append(tokenizer.decode(ids, skip_special_tokens=True))
+
+    # the test set has no labels, so we only save our queries and their
+    # records, these two files are the leaderboard submission
+    save_queries_and_records(generated_queries, model_sql_path, model_record_path)
 
 def main():
     # Get key arguments

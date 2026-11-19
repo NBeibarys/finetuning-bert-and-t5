@@ -2,3 +2,8 @@
 __pycache__/
 *.pyc
 .claude/settings.local.json
+part1/out/
+part1/out_augmented/
+part2/checkpoints/
+*.pt
+*.bin

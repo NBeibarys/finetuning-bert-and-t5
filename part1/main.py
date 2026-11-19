@@ -45,14 +45,38 @@ def do_train(args, model, train_dataloader, save_dir="./out"):
     # You can use progress_bar.update(1) to see the progress during training
     # You can refer to the pytorch tutorial covered in class for reference
 
-    raise NotImplementedError
-
     ##### YOUR CODE ENDS HERE ######
+    # first we prepare loop over each epoch and batches
+    for epoch in range(num_epochs): 
+        for batch in train_dataloader: 
+            # move the batch to the device (GPU or CPU)
+            batch = {k: v.to(device) for k, v in batch.items()}
+
+            # reset the gradients to zero
+            optimizer.zero_grad()
+
+            # make a forward pass through the model
+            predictions = model(**batch)
+
+            # compute the loss 
+            loss = predictions.loss 
+
+            # backpropagate the loss 
+            loss.backward()
+
+            # now we do the step 
+            optimizer.step()
+
+            # we start a decay of the learning rate
+            lr_scheduler.step()
+            # update the progress bar
+            progress_bar.update(1)
 
     print("Training completed...")
     print("Saving Model....")
     model.save_pretrained(save_dir)
 
+    # return the model after training
     return
 
 
@@ -93,8 +117,25 @@ def create_augmented_dataloader(args, dataset):
     # dataloader will be for the original training split augmented with 5k random transformed examples from the training set.
     # You may find it helpful to see how the dataloader was created at other place in this code.
 
-    raise NotImplementedError
+    # draw 5k random examples from the training set
+    augment_dataset = dataset["train"].shuffle(seed=42).select(range(5000))
 
+    # transform the 5k random examples using the custom_transform function
+    transformed_augment_dataset = augment_dataset.map(custom_transform, load_from_cache_file=False)
+
+    # now we need to combine the original training dataset with the transformed augment dataset
+    combined_dataset = datasets.concatenate_datasets([dataset["train"], transformed_augment_dataset])
+
+    # now we need to tokenize the combined dataset
+    transformed_tokenized_dataset = combined_dataset.map(tokenize_function, batched=True, load_from_cache_file=False)
+
+    # necessary pre-processing steps to prepare the dataset for use by the model
+    transformed_tokenized_dataset = transformed_tokenized_dataset.remove_columns(["text"])
+    transformed_tokenized_dataset = transformed_tokenized_dataset.rename_column("label", "labels")
+    transformed_tokenized_dataset.set_format("torch")
+
+    # create a dataloader for the transformed training dataset
+    train_dataloader = DataLoader(transformed_tokenized_dataset, batch_size=args.batch_size, shuffle=True)
     ##### YOUR CODE ENDS HERE ######
 
     return train_dataloader
